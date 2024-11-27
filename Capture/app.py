@@ -154,7 +154,8 @@ class PacketStats:
 
 try:
     print("Loading model...")
-    model_data = joblib.load('/Users/estebanm/Desktop/CTPproject/Capture/Anomaly_Model.joblib')
+  #  model_data = joblib.load('/Users/estebanm/Desktop/CTPproject/Capture/Anomaly_Model.joblib')
+    model_data = joblib.load('./Anomaly_Model.joblib')
     pipeline = {
         'model': model_data['model'],
         'scaler': model_data['model'].named_steps['scaler'],
