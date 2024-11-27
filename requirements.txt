@@ -1,0 +1,12 @@
+streamlit
+pandas
+numpy
+plotly
+plotly-express
+scikit-learn
+matplotlib
+seaborn
+pyshark
+netifaces
+joblib
+imblearn
