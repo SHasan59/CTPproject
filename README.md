@@ -29,7 +29,7 @@ This repository contains the source code, trained ML model, and related resource
 
 ## Acknowledgments  
 - **Contributors**: Samith Hasan, Ibrahim Faruqee, Esteban Mesa 
-- **Dataset Source**: ASK ESTEBAN 
+- **Dataset Source**: Kaggle & our self created datasets
 - **Inspiration**: Network security and anomaly detection algorithms.  
 
 ---
