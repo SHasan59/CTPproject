@@ -157,13 +157,8 @@ class PacketStats:
 
 try:
     print("Loading model...")
-<<<<<<< HEAD
     # Use the constructed path to load the model
     model_data = joblib.load(MODEL_PATH)
-=======
-  #  model_data = joblib.load('/Users/estebanm/Desktop/CTPproject/Capture/Anomaly_Model.joblib')
-    model_data = joblib.load('./Anomaly_Model.joblib')
->>>>>>> refs/remotes/origin/main
     pipeline = {
         'model': model_data['model'],
         'scaler': model_data['model'].named_steps['scaler'],
