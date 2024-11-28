@@ -10,7 +10,10 @@ import joblib
 from threading import Lock
 import streamlit as st
 
+current_dir = os.path.dirname(os.path.abspath(__file__))
 
+MODEL_PATH = os.path.join(current_dir, 'Anomaly_Model.joblib')
+flow_dict_lock = threading.Lock()
 FEATURE_NAMES = [
     ' Destination Port', 
     ' Flow Duration',
@@ -154,7 +157,8 @@ class PacketStats:
 
 try:
     print("Loading model...")
-    model_data = joblib.load('/Users/estebanm/Desktop/CTPproject/Capture/Anomaly_Model.joblib')
+    # Use the constructed path to load the model
+    model_data = joblib.load(MODEL_PATH)
     pipeline = {
         'model': model_data['model'],
         'scaler': model_data['model'].named_steps['scaler'],
@@ -514,87 +518,98 @@ def start_processing_threads(packet_queue, flow_dict, pipeline, stats):
         thread.start()
 
 def process_packets(packet_queue, flow_dict, pipeline, stats):
-    """
-    Process packets from the shared queue, update flows, and make predictions.
-    """
     while True:
         try:
-            # Get a packet from the queue
             try:
                 packet = packet_queue.get(timeout=1)
             except Empty:
                 continue
-
-            # Skip non-IP packets
+                
             if not hasattr(packet, 'ip'):
+                if VERBOSE:
+                    print(f"Skipping non-IP packet: {packet}")
                 continue
 
-            # Extract flow information
-            src_ip = packet.ip.src
-            dst_ip = packet.ip.dst
+            # Extract packet information outside the lock
+            try:
+                if not hasattr(packet.ip, 'src') or not hasattr(packet.ip, 'dst'):
+                    if VERBOSE:
+                        print(f"Packet missing IP addresses: {packet}")
+                    continue
+                    
+                src_ip = packet.ip.src
+                dst_ip = packet.ip.dst
+                
+                # Get port information
+                if hasattr(packet, 'tcp'):
+                    src_port = int(packet.tcp.srcport)
+                    dst_port = int(packet.tcp.dstport)
+                    protocol = 'TCP'
+                elif hasattr(packet, 'udp'):
+                    src_port = int(packet.udp.srcport)
+                    dst_port = int(packet.udp.dstport)
+                    protocol = 'UDP'
+                else:
+                    continue
 
-            # Get port information based on protocol
-            if hasattr(packet, 'tcp'):
-                src_port = int(packet.tcp.srcport)
-                dst_port = int(packet.tcp.dstport)
-                protocol = 'TCP'
-            elif hasattr(packet, 'udp'):
-                src_port = int(packet.udp.srcport)
-                dst_port = int(packet.udp.dstport)
-                protocol = 'UDP'
-            else:
+                # Create flow keys
+                forward_key = (src_ip, src_port, dst_ip, dst_port, protocol)
+                backward_key = (dst_ip, dst_port, src_ip, src_port, protocol)
+
+                # Update stats first
+                stats.update_stats(False)
+
+                # Now use the lock when accessing flow_dict
+                with flow_dict_lock:
+                    # Get or create flow
+                    if forward_key in flow_dict:
+                        flow = flow_dict[forward_key]
+                        direction = 'forward'
+                    elif backward_key in flow_dict:
+                        flow = flow_dict[backward_key]
+                        direction = 'backward'
+                    else:
+                        flow = Flow(src_ip, src_port, dst_ip, dst_port, protocol)
+                        flow_dict[forward_key] = flow
+                        direction = 'forward'
+
+                    # Add packet to flow while still holding the lock
+                    flow.add_packet(packet, direction)
+
+                    # Check for expired flows while holding the lock
+                    for flow_key, flow in list(flow_dict.items()):
+                        if flow.is_expired(timeout=60):
+                            try:
+                                # Extract features and make prediction
+                                features = flow.compute_features()
+                                features_df = pd.DataFrame([features])
+                                features_df = features_df[pipeline['selected_features']]
+                                X = features_df.copy()
+                                X = pipeline['variance_selector'].transform(X)
+                                X = pipeline['scaler'].transform(X)
+                                X = pipeline['selector'].transform(X)
+                                prediction = pipeline['model'].predict(X)
+
+                                # Log prediction
+                                src_ip, src_port, dst_ip, dst_port, proto = flow_key
+                                status = 'DDoS' if prediction[0] == 1 else 'Normal'
+                                packets = flow.total_fwd_packets + flow.total_bwd_packets
+                                print(f"[{time.strftime('%H:%M:%S')}] {src_ip}:{src_port} → {dst_ip}:{dst_port} | {proto} | Packets: {packets} | Status: {status}")
+
+                            except Exception as e:
+                                print(f"Prediction error: {e}")
+                            finally:
+                                del flow_dict[flow_key]
+
+            except AttributeError as e:
+                if VERBOSE:
+                    print(f"Packet parsing error: {e}")
                 continue
-
-            # Create unique flow keys for both directions
-            forward_key = (src_ip, src_port, dst_ip, dst_port, protocol)
-            backward_key = (dst_ip, dst_port, src_ip, src_port, protocol)
-
-            # Determine flow direction and get/create flow object
-            if forward_key in flow_dict:
-                flow = flow_dict[forward_key]
-                direction = 'forward'
-            elif backward_key in flow_dict:
-                flow = flow_dict[backward_key]
-                direction = 'backward'
-            else:
-                flow = Flow(src_ip, src_port, dst_ip, dst_port, protocol)
-                flow_dict[forward_key] = flow
-                direction = 'forward'
-
-            # Add packet to flow
-            flow.add_packet(packet, direction)
-
-            # Check for expired flows
-            for flow_key, flow in list(flow_dict.items()):
-                if flow.is_expired(timeout=60):
-                    try:
-                        # Extract features and make prediction
-                        features = flow.compute_features()
-                        features_df = pd.DataFrame([features])
-                        features_df = features_df[pipeline['selected_features']]
-                        X = features_df.copy()
-                        X = pipeline['variance_selector'].transform(X)
-                        X = pipeline['scaler'].transform(X)
-                        X = pipeline['selector'].transform(X)
-                        prediction = pipeline['model'].predict(X)
-
-                        # Log prediction
-                        src_ip, src_port, dst_ip, dst_port, proto = flow_key
-                        status = 'DDoS' if prediction[0] == 1 else 'Normal'
-                        packets = flow.total_fwd_packets + flow.total_bwd_packets
-                        print(f"[{time.strftime('%H:%M:%S')}] {src_ip}:{src_port} → {dst_ip}:{dst_port} | {proto} | Packets: {packets} | Status: {status}")
-
-                    except Exception as e:
-                        print(f"Prediction error: {e}")
-
-                    finally:
-                        del flow_dict[flow_key]
 
         except Exception as e:
-            print(f"Processing error: {e}")
+            if VERBOSE:
+                print(f"Processing error: {e}")
             continue
-
-
 
 def process_packets(packet_queue, flow_dict, pipeline, stats):
     while True:
